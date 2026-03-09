@@ -14,8 +14,8 @@ from threading import Thread
 # ========== НАСТРОЙКИ ==========
 
 # Токены (ЗАМЕНИТЬ НА СВОИ)
-TOKEN = 'YOUR_BOT_TOKEN_HERE'  # Токен от @BotFather
-PAYMENT_TOKEN = 'YOUR_PAYMENT_TOKEN_HERE'  # Токен для звёзд от BotFather
+TOKEN = '8520227149:AAESRVJc5jKC_6PqxpFTWuiMXA__WmTQ_LI'  # Токен от @BotFather
+PAYMENT_TOKEN = 'TEST_PROVIDER_TOKEN'  # Токен для звёзд от BotFather
 API_URL = 'https://kilogram.atwebpages.com/api.php'  # URL твоего сайта
 
 # Администраторы (твой ID)
