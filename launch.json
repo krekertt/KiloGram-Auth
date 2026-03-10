@@ -1,0 +1,48 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Telegram Bot",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/bot.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: Bot with arguments",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/bot.py",
+            "console": "integratedTerminal",
+            "args": ["--debug"],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "BOT_ENV": "development"
+            }
+        },
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Attach to Bot",
+            "type": "python",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            }
+        }
+    ]
+}
