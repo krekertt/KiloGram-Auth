@@ -18,7 +18,7 @@ import json
 
 # ========== НАСТРОЙКИ ==========
 
-TOKEN = '8520227149:AAESRVJc5jKC_6PqxpFTWuiMXA__WmTQ_LI'
+TOKEN = '8081566708:AAHm4ppfiDQMVT_GCsTFmXXe-Z56UWae6AM'
 PAYMENT_TOKEN = 'TEST_PROVIDER_TOKEN'  # Временный токен
 API_URL = 'https://kilogram.atwebpages.com/api.php'
 ADMIN_IDS = [1726423121]  # Твой ID
