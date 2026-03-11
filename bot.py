@@ -15,20 +15,23 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 import requests
 import json
+import os
+import threading
+from flask import Flask, request, jsonify
 
 # ========== НАСТРОЙКИ ==========
 
 TOKEN = '8081566708:AAHm4ppfiDQMVT_GCsTFmXXe-Z56UWae6AM'
-PAYMENT_TOKEN = 'TEST_PROVIDER_TOKEN'  # Временный токен
+PAYMENT_TOKEN = 'TEST_PROVIDER_TOKEN'  # Получи у BotFather
 API_URL = 'https://kilogram.atwebpages.com/api.php'
 ADMIN_IDS = [1726423121]  # Твой ID
-SUPPORT_USERNAME = '@yourples'  # Твой юзернейм для поддержки
+SUPPORT_USERNAME = '@yourples'  # Твой юзернейм
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Инициализация бота и диспетчера
+# Инициализация бота
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
@@ -42,8 +45,6 @@ class Database:
         self.create_tables()
     
     def create_tables(self):
-        """Создание всех таблиц"""
-        
         # Пользователи
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -88,18 +89,28 @@ class Database:
         )
         ''')
         
+        # Коды подтверждения
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS auth_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER,
+            phone TEXT,
+            code TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            used INTEGER DEFAULT 0
+        )
+        ''')
+        
         self.conn.commit()
         logger.info("База данных инициализирована")
     
     # ===== ПОЛЬЗОВАТЕЛИ =====
     
     async def get_user(self, chat_id):
-        """Получить пользователя по ID"""
         self.cursor.execute("SELECT * FROM users WHERE chat_id = ?", (chat_id,))
         return self.cursor.fetchone()
     
     async def create_user(self, chat_id, username=None, first_name=None, last_name=None):
-        """Создать нового пользователя"""
         self.cursor.execute('''
             INSERT OR IGNORE INTO users (chat_id, username, first_name, last_name, stars_balance, created_at, last_active)
             VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -108,14 +119,12 @@ class Database:
         logger.info(f"Новый пользователь: {chat_id}")
     
     async def update_last_active(self, chat_id):
-        """Обновить время последней активности"""
         self.cursor.execute("UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE chat_id = ?", (chat_id,))
         self.conn.commit()
     
     # ===== БАНЫ =====
     
     async def check_ban(self, chat_id):
-        """Проверить, забанен ли пользователь"""
         self.cursor.execute("SELECT is_banned, ban_until FROM users WHERE chat_id = ?", (chat_id,))
         result = self.cursor.fetchone()
         
@@ -135,44 +144,78 @@ class Database:
         
         return bool(is_banned)
     
+    async def ban_user(self, chat_id, admin_id, reason, duration='permanent', hours=None):
+        if duration == 'permanent':
+            self.cursor.execute('''
+                UPDATE users SET is_banned = 1, ban_reason = ?, ban_until = 'permanent' 
+                WHERE chat_id = ?
+            ''', (reason, chat_id))
+        else:
+            ban_until = datetime.now() + timedelta(hours=hours)
+            ban_until_str = ban_until.strftime('%Y-%m-%d %H:%M:%S')
+            self.cursor.execute('''
+                UPDATE users SET is_banned = 1, ban_reason = ?, ban_until = ? 
+                WHERE chat_id = ?
+            ''', (reason, ban_until_str, chat_id))
+        
+        self.conn.commit()
+    
+    async def unban_user(self, chat_id):
+        self.cursor.execute("UPDATE users SET is_banned = 0, ban_reason = NULL, ban_until = NULL WHERE chat_id = ?", (chat_id,))
+        self.conn.commit()
+    
     # ===== ЗВЁЗДЫ =====
     
     async def get_stars_balance(self, chat_id):
-        """Получить баланс звёзд"""
         self.cursor.execute("SELECT stars_balance FROM users WHERE chat_id = ?", (chat_id,))
         result = self.cursor.fetchone()
         return result[0] if result else 0
     
     async def add_stars(self, chat_id, amount, description="Пополнение"):
-        """Добавить звёзды пользователю"""
         self.cursor.execute("UPDATE users SET stars_balance = stars_balance + ? WHERE chat_id = ?", (amount, chat_id))
         self.cursor.execute('''
             INSERT INTO transactions (chat_id, amount_stars, description, status)
             VALUES (?, ?, ?, 'completed')
         ''', (chat_id, amount, description))
         self.conn.commit()
-        logger.info(f"Добавлено {amount}⭐ пользователю {chat_id}")
+    
+    async def set_stars_balance(self, chat_id, amount, admin_id=None):
+        self.cursor.execute("UPDATE users SET stars_balance = ? WHERE chat_id = ?", (amount, chat_id))
+        self.cursor.execute('''
+            INSERT INTO transactions (chat_id, amount_stars, description, status, admin_id)
+            VALUES (?, ?, 'Баланс установлен администратором', 'admin_set', ?)
+        ''', (chat_id, amount, admin_id))
+        self.conn.commit()
     
     # ===== НОМЕРА =====
     
     async def add_number(self, chat_id, phone_number, number_type, price=0):
-        """Добавить номер пользователю"""
         self.cursor.execute('''
             INSERT INTO numbers (phone_number, chat_id, type, price_stars)
             VALUES (?, ?, ?, ?)
         ''', (phone_number, chat_id, number_type, price))
         self.conn.commit()
-        logger.info(f"Номер {phone_number} выдан пользователю {chat_id}")
     
     async def get_user_numbers(self, chat_id):
-        """Получить все номера пользователя"""
         self.cursor.execute("SELECT * FROM numbers WHERE chat_id = ?", (chat_id,))
         return self.cursor.fetchall()
     
     async def is_number_available(self, phone_number):
-        """Проверить, свободен ли номер"""
         self.cursor.execute("SELECT 1 FROM numbers WHERE phone_number = ?", (phone_number,))
         return not self.cursor.fetchone()
+    
+    # ===== КОДЫ =====
+    
+    async def save_code(self, chat_id, phone, code):
+        self.cursor.execute("INSERT INTO auth_codes (chat_id, phone, code) VALUES (?, ?, ?)", 
+                          (chat_id, phone, code))
+        self.conn.commit()
+        return self.cursor.lastrowid
+    
+    async def verify_code(self, chat_id, code):
+        self.cursor.execute("SELECT * FROM auth_codes WHERE chat_id = ? AND code = ? AND used = 0 ORDER BY created_at DESC LIMIT 1", 
+                          (chat_id, code))
+        return self.cursor.fetchone()
 
 # Инициализация БД
 db = Database()
@@ -182,23 +225,26 @@ db = Database()
 class CustomNumber(StatesGroup):
     waiting_for_number = State()
 
+class AdminStates(StatesGroup):
+    waiting_for_user_id = State()
+    waiting_for_stars_amount = State()
+    waiting_for_ban_reason = State()
+    waiting_for_ban_hours = State()
+
 # ========== ФИЛЬТРЫ ==========
 
 async def is_admin(chat_id: int) -> bool:
-    """Проверка на админа"""
     return chat_id in ADMIN_IDS
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 def generate_phone_number(prefix, length):
-    """Генерация случайного номера"""
     number = prefix
     for _ in range(length - len(prefix)):
         number += str(random.randint(0, 9))
     return number
 
 async def send_to_site(chat_id, phone_number, number_type):
-    """Отправка номера на основной сайт"""
     try:
         data = {
             'action': 'register_phone',
@@ -206,19 +252,15 @@ async def send_to_site(chat_id, phone_number, number_type):
             'phone': phone_number,
             'type': number_type
         }
-        
         response = requests.post(API_URL, json=data, timeout=5)
         if response.status_code == 200:
             logger.info(f"✅ Номер {phone_number} отправлен на сайт")
-        else:
-            logger.error(f"❌ Ошибка отправки: {response.status_code}")
     except Exception as e:
         logger.error(f"❌ Ошибка отправки на сайт: {e}")
 
 # ========== МЕНЮ ==========
 
 async def show_main_menu(chat_id: int, message_id: int = None):
-    """Главное меню"""
     stars = await db.get_stars_balance(chat_id)
     
     markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -240,7 +282,6 @@ async def show_main_menu(chat_id: int, message_id: int = None):
         await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
 async def show_profile(chat_id: int, message_id: int = None):
-    """Профиль пользователя"""
     stars = await db.get_stars_balance(chat_id)
     user = await db.get_user(chat_id)
     
@@ -272,7 +313,6 @@ async def show_profile(chat_id: int, message_id: int = None):
         await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
 async def show_premium_menu(chat_id: int, message_id: int = None):
-    """Меню выбора премиум номера"""
     stars = await db.get_stars_balance(chat_id)
     
     markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -298,7 +338,6 @@ async def show_premium_menu(chat_id: int, message_id: int = None):
         await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
 async def show_buy_stars(chat_id: int, message_id: int = None):
-    """Меню покупки звёзд"""
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="10 ⭐", callback_data="pay_10")
@@ -324,6 +363,34 @@ async def show_buy_stars(chat_id: int, message_id: int = None):
     else:
         await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
+# ========== АДМИНСКОЕ МЕНЮ ==========
+
+async def show_admin_menu(chat_id: int, message_id: int = None):
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="👥 Управление пользователями", callback_data="admin_users"),
+            InlineKeyboardButton(text="📱 Управление номерами", callback_data="admin_numbers")
+        ],
+        [
+            InlineKeyboardButton(text="💰 Управление звёздами", callback_data="admin_stars"),
+            InlineKeyboardButton(text="🔨 Баны", callback_data="admin_bans")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
+            InlineKeyboardButton(text="📝 Логи", callback_data="admin_logs")
+        ],
+        [
+            InlineKeyboardButton(text="◀️ Выход", callback_data="back_to_main")
+        ]
+    ])
+    
+    text = "👑 *Админ-панель*\n\nВыберите раздел:"
+    
+    if message_id:
+        await bot.edit_message_text(text, chat_id, message_id, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+
 # ========== КОМАНДЫ ==========
 
 @dp.message(Command("start"))
@@ -336,7 +403,7 @@ async def cmd_start(message: Message):
     await db.create_user(chat_id, username, first_name, last_name)
     
     if await is_admin(chat_id):
-        await show_admin_main_menu(chat_id)
+        await show_admin_menu(chat_id)
     else:
         await show_main_menu(chat_id)
 
@@ -344,7 +411,10 @@ async def cmd_start(message: Message):
 
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: CallbackQuery):
-    await show_main_menu(callback.message.chat.id, callback.message.message_id)
+    if await is_admin(callback.message.chat.id):
+        await show_admin_menu(callback.message.chat.id, callback.message.message_id)
+    else:
+        await show_main_menu(callback.message.chat.id, callback.message.message_id)
     await callback.answer()
 
 @dp.callback_query(F.data == "profile")
@@ -384,7 +454,6 @@ async def premium_menu(callback: CallbackQuery):
 async def free_number(callback: CallbackQuery):
     chat_id = callback.message.chat.id
     
-    # Проверяем, есть ли уже бесплатный номер
     numbers = await db.get_user_numbers(chat_id)
     free_exists = any(n[2] == 'free' for n in numbers)
     
@@ -392,17 +461,12 @@ async def free_number(callback: CallbackQuery):
         await callback.answer("❌ У вас уже есть бесплатный номер", show_alert=True)
         return
     
-    # Генерируем номер
     number = generate_phone_number("+1", 12)
     
-    # Проверяем уникальность
     while not await db.is_number_available(number):
         number = generate_phone_number("+1", 12)
     
-    # Сохраняем
     await db.add_number(chat_id, number, 'free')
-    
-    # Отправляем на сайт
     await send_to_site(chat_id, number, 'free')
     
     await bot.edit_message_text(
@@ -427,20 +491,13 @@ async def premium_random(callback: CallbackQuery):
         await callback.answer("❌ Недостаточно звёзд. Нужно 5⭐", show_alert=True)
         return
     
-    # Генерируем номер
     number = generate_phone_number("+888", 12)
     
-    # Проверяем уникальность
     while not await db.is_number_available(number):
         number = generate_phone_number("+888", 12)
     
-    # Списываем звёзды
     await db.add_stars(chat_id, -5, "Покупка длинного номера")
-    
-    # Сохраняем номер
     await db.add_number(chat_id, number, 'premium_random', 5)
-    
-    # Отправляем на сайт
     await send_to_site(chat_id, number, 'premium')
     
     await bot.edit_message_text(
@@ -478,7 +535,6 @@ async def process_custom_number(message: Message, state: FSMContext):
     chat_id = message.chat.id
     custom = message.text.strip()
     
-    # Проверка формата
     if not custom.isdigit():
         await message.answer("❌ Только цифры!")
         await show_premium_menu(chat_id)
@@ -493,7 +549,6 @@ async def process_custom_number(message: Message, state: FSMContext):
     
     number = "+888" + custom
     
-    # Проверяем, свободен ли номер
     if not await db.is_number_available(number):
         await message.answer("❌ Этот номер уже занят. Попробуйте другой.")
         await show_premium_menu(chat_id)
@@ -507,13 +562,8 @@ async def process_custom_number(message: Message, state: FSMContext):
         await state.clear()
         return
     
-    # Списываем звёзды
     await db.add_stars(chat_id, -10, "Покупка короткого номера")
-    
-    # Сохраняем номер
     await db.add_number(chat_id, number, 'premium_custom', 10)
-    
-    # Отправляем на сайт
     await send_to_site(chat_id, number, 'premium')
     
     await message.answer(
@@ -561,6 +611,54 @@ async def my_numbers(callback: CallbackQuery):
     )
     await callback.answer()
 
+# ========== АДМИНСКИЕ КНОПКИ ==========
+
+@dp.callback_query(F.data == "admin_users")
+async def admin_users(callback: CallbackQuery):
+    if not await is_admin(callback.message.chat.id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="admin_find_user")],
+        [InlineKeyboardButton(text="📋 Список пользователей", callback_data="admin_list_users")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]
+    ])
+    
+    await bot.edit_message_text(
+        "👥 *Управление пользователями*",
+        callback.message.chat.id,
+        callback.message.message_id,
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+    if not await is_admin(callback.message.chat.id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    
+    # Здесь должна быть статистика из БД
+    text = "📊 *Статистика*\n\n"
+    text += "👥 Пользователей: " + str(len(db.cursor.execute("SELECT * FROM users").fetchall())) + "\n"
+    text += "📱 Номеров: " + str(len(db.cursor.execute("SELECT * FROM numbers").fetchall())) + "\n"
+    text += "⭐ Всего звёзд: 0\n"
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_users")]
+    ])
+    
+    await bot.edit_message_text(
+        text,
+        callback.message.chat.id,
+        callback.message.message_id,
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+    await callback.answer()
+
 # ========== ОПЛАТА ==========
 
 @dp.callback_query(F.data.startswith("pay_"))
@@ -568,7 +666,6 @@ async def process_payment(callback: CallbackQuery):
     chat_id = callback.message.chat.id
     stars_amount = int(callback.data.replace("pay_", ""))
     
-    # Создаём инвойс (1 звезда = 1 цент, но пользователь видит как 1 рубль)
     prices = [LabeledPrice(label=f"{stars_amount} ⭐", amount=stars_amount * 100)]
     
     await bot.send_invoice(
@@ -593,7 +690,6 @@ async def successful_payment_handler(message: Message):
     payload = message.successful_payment.invoice_payload
     stars_amount = int(payload.replace("stars_", ""))
     
-    # Начисляем звёзды
     await db.add_stars(chat_id, stars_amount, f"Пополнение {stars_amount}⭐")
     
     await message.answer(
@@ -602,40 +698,59 @@ async def successful_payment_handler(message: Message):
     )
     await show_main_menu(chat_id)
 
-# ========== АДМИНСКИЕ ФУНКЦИИ ==========
+# ========== ВЕБ-СЕРВЕР ДЛЯ API ==========
 
-async def show_admin_main_menu(chat_id: int, message_id: int = None):
-    """Главное меню админа"""
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users"),
-            InlineKeyboardButton(text="📱 Номера", callback_data="admin_numbers")
-        ],
-        [
-            InlineKeyboardButton(text="💰 Звёзды", callback_data="admin_stars"),
-            InlineKeyboardButton(text="🔨 Баны", callback_data="admin_bans")
-        ],
-        [
-            InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
-            InlineKeyboardButton(text="📝 Логи", callback_data="admin_logs")
-        ],
-        [
-            InlineKeyboardButton(text="◀️ Выход", callback_data="back_to_main")
-        ]
-    ])
+web_app = Flask(__name__)
+
+@web_app.route('/send_code', methods=['POST'])
+def handle_send_code():
+    """Эндпоинт для отправки кода с сайта"""
+    data = request.json
+    chat_id = data.get('chat_id')
+    phone = data.get('phone')
     
-    text = "👑 *Админ-панель*\n\nВыберите раздел:"
+    if not chat_id:
+        return jsonify({'error': 'no_chat_id'}), 400
     
-    if message_id:
-        await bot.edit_message_text(text, chat_id, message_id, parse_mode="Markdown", reply_markup=markup)
-    else:
-        await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+    code = random.randint(100000, 999999)
+    
+    try:
+        # Создаём новый цикл событий для потока
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Сохраняем код в БД
+        loop.run_until_complete(db.save_code(chat_id, phone, str(code)))
+        
+        # Отправляем сообщение через бота
+        loop.run_until_complete(
+            bot.send_message(
+                chat_id,
+                f"🔑 *Код подтверждения*\n\nВаш код для входа: `{code}`\n\n⏱️ Действителен 5 минут",
+                parse_mode='Markdown'
+            )
+        )
+        loop.close()
+        
+        return jsonify({'success': True, 'code': code})
+    except Exception as e:
+        logger.error(f"Ошибка отправки кода: {e}")
+        return jsonify({'error': 'telegram_error'}), 500
+
+@web_app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok', 'bot': 'KiloGram Bot'})
+
+def run_web_server():
+    """Запуск веб-сервера в отдельном потоке"""
+    port = int(os.getenv("PORT", 3000))
+    web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # ========== ЗАПУСК ==========
 
 async def main():
     print("=" * 50)
-    print("🤖 KiloGram Bot запущен на aiogram...")
+    print("🤖 KiloGram Bot запущен...")
     print(f"👑 Админ ID: {ADMIN_IDS[0]}")
     print(f"🆘 Поддержка: {SUPPORT_USERNAME}")
     print("=" * 50)
@@ -643,4 +758,10 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
+    # Запускаем веб-сервер в отдельном потоке
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    print(f"🌐 Веб-сервер для API запущен на порту {os.getenv('PORT', 3000)}")
+    
+    # Запускаем бота
     asyncio.run(main())
