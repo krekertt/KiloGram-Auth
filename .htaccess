@@ -1,0 +1,15 @@
+# Включаем перенаправление
+RewriteEngine On
+
+# Если запрашивают корень или index.html - показываем login.php
+RewriteRule ^$ login.php [L]
+RewriteRule ^index\.html$ login.php [L]
+
+# Защита от просмотра папок
+Options -Indexes
+
+# Защита базы данных
+<FilesMatch "\.(db|sqlite|sqlite3)$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>

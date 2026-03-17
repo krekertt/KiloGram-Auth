@@ -1,0 +1,2 @@
+2026-03-13 11:25:34 - Code: 123456, HTTP: 0, Error: Failed to connect to api.telegram.org port 443: Connection refused
+2026-03-13 12:01:46 - Code: 123456, HTTP: 0, Error: Failed to connect to api.telegram.org port 443: Connection refused
