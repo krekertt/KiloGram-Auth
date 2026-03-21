@@ -1,11 +1,11 @@
 <?php
 session_start();
 
-define('DB_HOST', 'fdb1031.runhosting.com');
-define('DB_PORT', '3306');
-define('DB_NAME', '4737652_sqlbase');
-define('DB_USER', '4737652_sqlbase');
-define('DB_PASS', '12345678pass!@');
+define('DB_HOST', 'db.fr-pari1.bengt.wasmernet.com');
+define('DB_PORT', '10272');
+define('DB_NAME', 'sqliteo');
+define('DB_USER', 'e980db847686800083ac5b13ee25');
+define('DB_PASS', '069be980-db84-7779-8000-3395ab35ec5d);
 
 try {
     $db = new PDO(
